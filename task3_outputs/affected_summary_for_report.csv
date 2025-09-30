@@ -1,0 +1,4 @@
+,Directly affected agents,km travelled by affected agents,total time spent by affected agents (h)
+Base,10503.0000,1668748.9370,41633.6142
+Policy-101 vs Base (%),-0.3237,-0.4568,13.0453
+Policy-251 vs Base (%),-0.3047,-1.0717,6.0946
