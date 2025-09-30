@@ -3,7 +3,6 @@
 Task 3
 Cases: Base vs Policy-101 vs Policy-251
 
-
 Author: Group 8
 """
 
@@ -22,7 +21,7 @@ pd.set_option("display.expand_frame_repr", False)
 
 # ------------------------- CONFIG -------------------------
 
-# 三个 case 的输入文件路径（保持你之前的路径）
+# Input file paths for the three cases (adjust to your local paths)
 CASES = {
     "Base": {
         "events": Path("/Users/srainxin/Downloads/berlin-v6.4-10pct/berlin-v6.4.output_events.xml.gz"),
@@ -38,7 +37,7 @@ CASES = {
     },
 }
 
-# Ringbahnbrücke / Funkturm 周边 links（用于“受影响者”识别）
+# Links around Ringbahnbrücke/Funkturm used to flag the "directly affected" subgroup
 TARGET_LINKS: Set[str] = {
     "428725175", "428725174", "305608389", "459811452", "4434516",
     "459811453#0", "4434508#0", "459810102", "459810103", "322543975",
@@ -46,30 +45,30 @@ TARGET_LINKS: Set[str] = {
     "322543973", "84792456#0", "4490229", "4392640",
 }
 
-# 受影响人群判定口径（推荐 baseline）
+# Definition of the affected set (recommend "baseline")
 AFFECTED_DEFINITION = "baseline"   # "baseline" or "per_case"
 
-# 峰时段窗口（小时）
+# Peak-hour windows (hour of day)
 AM_START, AM_END = 7, 10
 PM_START, PM_END = 16, 19
 
-# 导出
+# Output options
 WRITE_CSV = True
-OUT_DIR = Path("./task3_outputs")  # 输出目录
+OUT_DIR = Path("./task3_outputs")  # Output folder
 
 # ------------------------- HELPERS -------------------------
 
 
 def _assert_py312():
-    # 保险：限定 3.12（可注释）
+    # Safety check: require Python 3.12 (can be removed)
     if sys.version_info[:2] != (3, 12):
         print(f"[WARN] Python {sys.version.split()[0]} detected. Recommended 3.12.x.", file=sys.stderr)
 
 
 def parse_affected_from_events(events_path: Path, target_links: Set[str]) -> Set[str]:
     """
-    在给定 events 中，找出进入过 target_links 的所有 person（或由 vehicle 映射到 person）。
-    兼容 'linkEnter' 与 'entered link' 两种事件名。
+    From the events file, collect persons who entered any of target_links.
+    Falls back via vehicle->person mapping. Supports 'linkEnter' and 'entered link'.
     """
     veh2driver: Dict[str, str] = {}
     affected: Set[str] = set()
@@ -102,13 +101,13 @@ def parse_affected_from_events(events_path: Path, target_links: Set[str]) -> Set
     return affected
 
 
-# ---------- Robust trips reader (兼容不同列名/分隔符/单位) ----------
+# ---------- Robust trips reader (tolerates column names / separators / units) ----------
 
 def _read_trips_flex(trips_path: Path) -> pd.DataFrame:
     """
-    更健壮地读取 MATSim trips：
-    - 自动尝试分隔符（; , 或 \t）
-    - 列名统一为小写、去空格
+    Robust MATSim trips reader:
+    - try separators (; , or \t)
+    - normalize column names to lowercase and strip spaces
     """
     last_err = None
     for sep_try in [None, ";", ",", "\t"]:
@@ -135,26 +134,28 @@ def _pick_col(df: pd.DataFrame, candidates: list[str]) -> str:
 
 def _to_seconds(series: pd.Series) -> pd.Series:
     """
-    将可能是数字秒、'PTxxMxxS'、'HH:MM:SS' 的列转成秒(float)
+    Convert columns to seconds (float):
+    - numeric seconds, or strings like 'PTxxMxxS' / 'HH:MM:SS'
     """
-    # 若全是数字或可转数字，直接视为秒
+    # If numeric-like, treat as seconds directly
     try:
         as_num = pd.to_numeric(series, errors="raise")
         return as_num.astype(float)
     except Exception:
         pass
-    # 否则当作时间字符串交给 pandas
+    # Otherwise parse as pandas timedelta
     return pd.to_timedelta(series).dt.total_seconds()
 
 
 def load_trips_generic(trips_path: Path) -> Tuple[pd.DataFrame, Dict[str, str]]:
     """
-    读取 trips 并标准化关键列名，返回 DataFrame + 使用的列名映射
-    产出标准列：
-      - 'person'（字符串）
-      - 'dep_s'（出发秒）
-      - 'trav_time_s'（出行时间秒）
-      - 'dist_km'（距离 km）
+    Load trips and standardize essential columns.
+    Returns DataFrame + mapping of original column names.
+    Output columns:
+      - 'person' (str)
+      - 'dep_s' (departure time in seconds)
+      - 'trav_time_s' (travel time in seconds)
+      - 'dist_km' (distance in km)
     """
     df = _read_trips_flex(trips_path)
     person_col = _pick_col(df, ["person", "personid", "person_id", "agent", "agent_id"])
@@ -175,7 +176,7 @@ def add_peak_flags(df: pd.DataFrame,
                    am: Tuple[int, int] = (AM_START, AM_END),
                    pm: Tuple[int, int] = (PM_START, PM_END)) -> pd.DataFrame:
     """
-    以出发时刻判定峰时段
+    Tag AM/PM/off-peak by departure time.
     """
     s = df.copy()
     def in_window(sec, start_h, end_h):
@@ -186,11 +187,11 @@ def add_peak_flags(df: pd.DataFrame,
     return s
 
 
-# ------------------------- KPI BUILDERS -------------------------
+# ------------------------- BUILDERS -------------------------
 
 def summarize_directly_affected(df: pd.DataFrame) -> pd.Series:
     """
-    受影响者三项 KPI（与你之前一致）
+    Three KPIs for the directly affected subgroup (same as §3.2.1).
     """
     return pd.Series({
         "Directly affected agents": df["person"].nunique(),
@@ -201,7 +202,7 @@ def summarize_directly_affected(df: pd.DataFrame) -> pd.Series:
 
 def kpi_stats_block(df: pd.DataFrame) -> pd.DataFrame:
     """
-    生成四行（AM/PM/Off/All）的 KPI：
+    Build four-period KPIs (AM/PM/Off/All):
       - trip_count
       - total_hours
       - mean_trav_min, median_trav_min, p95_trav_min
@@ -232,8 +233,8 @@ def kpi_stats_block(df: pd.DataFrame) -> pd.DataFrame:
 
 def percent_change_vs_base(tbl: pd.DataFrame, base_name: str = "Base") -> pd.DataFrame:
     """
-    将同结构的 KPI 表（index=case，columns=指标）转换成：
-      Base 行 = 绝对值；其他行 = (Policy-Base)/Base * 100
+    Convert a KPI table (rows = scenarios) to:
+      Base row = absolute values; others = (Policy - Base) / Base * 100
     """
     if base_name not in tbl.index:
         return tbl.copy()
@@ -248,13 +249,13 @@ def _format_df_for_print(df: pd.DataFrame) -> pd.DataFrame:
     def _fmt(v):
         try:
             fv = float(v)
-            # 整数显示为无小数，其他一位小数
+            # integers: no decimals; floats: 1 decimal; add thousands separator
             if abs(fv - round(fv)) < 1e-9:
                 return f"{int(round(fv)):,}"
             return f"{fv:,.1f}"
         except Exception:
             return str(v)
-    # pandas 未来弃用 applymap；这里用按列 map
+    # applymap is deprecated; map by column instead
     return df.apply(lambda col: col.map(_fmt))
 
 
@@ -264,7 +265,7 @@ def main():
     _assert_py312()
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    # 1) 受影响者 ID 集合
+    # 1) Build affected-ID sets
     if AFFECTED_DEFINITION == "baseline":
         affected = parse_affected_from_events(CASES["Base"]["events"], TARGET_LINKS)
         affected_by_case = {name: affected for name in CASES.keys()}
@@ -279,7 +280,7 @@ def main():
     else:
         raise ValueError("AFFECTED_DEFINITION must be 'baseline' or 'per_case'.")
 
-    # 2) 读取 trips（全体 & 受影响者），加峰时段标记
+    # 2) Load trips (all + affected) and add peak flags
     trips_all_by_case: dict[str, pd.DataFrame] = {}
     trips_aff_by_case: dict[str, pd.DataFrame] = {}
 
@@ -292,7 +293,7 @@ def main():
         ids = affected_by_case[name]
         trips_aff_by_case[name] = trips_df[trips_df["person"].isin(ids)].copy()
 
-    # 3) ——(A) 受影响者“总表”（与你之前一致）——
+    # 3)  Directly affected summary
     aff_summary = {}
     for name, df in trips_aff_by_case.items():
         aff_summary[name] = summarize_directly_affected(df)
@@ -305,20 +306,20 @@ def main():
     if WRITE_CSV:
         aff_summary_tbl.to_csv(OUT_DIR / "affected_summary_raw.csv")
         aff_display.to_csv(OUT_DIR / "affected_summary_for_report.csv", float_format="%.6f")
-        # 明细
+        # Detailed records
         pd.concat([df.assign(run=name) for name, df in trips_aff_by_case.items()],
                   ignore_index=True).to_csv(OUT_DIR / "affected_agents_detail.csv", index=False)
 
-    # 4) ——(B) 峰时段 KPI：全体出行者——（无 stack/unstack，长表法更稳）
-    # 先得到每个 case 的 period KPI（行=Period）
+    # 4) Peak-hour KPIs — ALL travellers (long-form method; no stack/unstack)
+    # First compute per-period KPIs for each case (row=Period)
     all_kpi_by_case = {name: kpi_stats_block(df).reset_index().rename(columns={"index": "Period"})
                        for name, df in trips_all_by_case.items()}
 
     base_all = all_kpi_by_case["Base"].copy()
     base_all["Scenario"] = "Base"
 
-    rows_all = [base_all]  # 第一部分：Base 绝对值（便于报告复用）
-    # 第二部分：Policy 相对 Base 的 % 变化
+    rows_all = [base_all]  # Part 1: Base absolute values (reusable in report)
+    # Part 2: Policy % change vs Base
     for name, tbl in all_kpi_by_case.items():
         if name == "Base":
             continue
@@ -337,16 +338,16 @@ def main():
     print(_format_df_for_print(all_vs_base_tbl))
 
     if WRITE_CSV:
-        # 原值（各 scenario 各 period 的绝对值）
+        # Raw values (absolute by scenario × period)
         pd.concat(
             [df.assign(Scenario=name) for name, df in all_kpi_by_case.items()],
             ignore_index=True
         ).to_csv(OUT_DIR / "peak_all_raw_by_scenario_period.csv", index=False)
 
-        # 含 Base 绝对值 + Policy 相对 Base（%）
+        # Table with Base absolute + Policy % vs Base
         all_vs_base_tbl.to_csv(OUT_DIR / "peak_all_vs_base.csv", float_format="%.6f")
 
-    # 5) ——(C) 峰时段 KPI：受影响者——（同样用长表法）
+    # 5) (C) Peak-hour KPIs — DIRECTLY AFFECTED (same long-form approach)
     aff_kpi_by_case = {name: kpi_stats_block(df).reset_index().rename(columns={"index": "Period"})
                        for name, df in trips_aff_by_case.items()}
 
@@ -379,7 +380,7 @@ def main():
 
         aff_vs_base_tbl.to_csv(OUT_DIR / "peak_aff_vs_base.csv", float_format="%.6f")
 
-    # 6) 附：导出每个 case 的受影响 ID（口径检查）
+    # 6) Export affected-ID lists per case
     if WRITE_CSV:
         for name, ids in affected_by_case.items():
             pd.Series(sorted(ids), name="person").to_csv(OUT_DIR / f"affected_ids_{name}.csv", index=False)
